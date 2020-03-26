@@ -12,12 +12,20 @@ pub use self::TestResult::*;
 // it means.
 pub const TR_OK: i32 = 50;
 pub const TR_FAILED: i32 = 51;
+pub const TR_SKIPPED: i32 = 52;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestRun {
+    Skipped(String),
+    Completed,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TestResult {
     TrOk,
     TrFailed,
     TrFailedMsg(String),
+    TrSkipped(String),
     TrIgnored,
     TrAllowedFail,
     TrBench(BenchSamples),
@@ -28,12 +36,13 @@ pub enum TestResult {
 /// and associated data.
 pub fn calc_result<'a>(
     desc: &TestDesc,
-    task_result: Result<(), &'a (dyn Any + 'static + Send)>,
+    task_result: Result<TestRun, &'a (dyn Any + 'static + Send)>,
     time_opts: &Option<time::TestTimeOptions>,
     exec_time: &Option<time::TestExecTime>,
 ) -> TestResult {
     let result = match (&desc.should_panic, task_result) {
-        (&ShouldPanic::No, Ok(())) | (&ShouldPanic::Yes, Err(_)) => TestResult::TrOk,
+        (_, Ok(TestRun::Skipped(reason))) => TestResult::TrSkipped(reason),
+        (&ShouldPanic::No, Ok(TestRun::Completed)) | (&ShouldPanic::Yes, Err(_)) => TestResult::TrOk,
         (&ShouldPanic::YesWithMessage(msg), Err(ref err)) => {
             let maybe_panic_str = err
                 .downcast_ref::<String>()
@@ -61,7 +70,7 @@ pub fn calc_result<'a>(
                 ))
             }
         }
-        (&ShouldPanic::Yes, Ok(())) | (&ShouldPanic::YesWithMessage(_), Ok(())) => {
+        (&ShouldPanic::Yes, Ok(_)) | (&ShouldPanic::YesWithMessage(_), Ok(_)) => {
             TestResult::TrFailedMsg("test did not panic as expected".to_string())
         }
         _ if desc.allow_fail => TestResult::TrAllowedFail,
@@ -94,6 +103,7 @@ pub fn get_result_from_exit_code(
         (_, TR_OK) => TestResult::TrOk,
         (true, TR_FAILED) => TestResult::TrAllowedFail,
         (false, TR_FAILED) => TestResult::TrFailed,
+        (_, TR_SKIPPED) => TestResult::TrSkipped("indicated that it should be skipped".into()),
         (_, _) => TestResult::TrFailedMsg(format!("got unexpected return code {}", code)),
     };
 

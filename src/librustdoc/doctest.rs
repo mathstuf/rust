@@ -1019,6 +1019,8 @@ impl Tester for Collector {
                     panic::resume_unwind(box ());
                 }
             }),
+            // TODO: Support skipfn for doctests?
+            skipfn: None,
         });
     }
 

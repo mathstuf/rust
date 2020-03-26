@@ -44,6 +44,10 @@ impl<T: Write> PrettyFormatter<T> {
         self.write_short_result("FAILED", term::color::RED)
     }
 
+    pub fn write_skipped(&mut self) -> io::Result<()> {
+        self.write_short_result("skipped", term::color::YELLOW)
+    }
+
     pub fn write_ignored(&mut self) -> io::Result<()> {
         self.write_short_result("ignored", term::color::YELLOW)
     }
@@ -208,6 +212,10 @@ impl<T: Write> OutputFormatter for PrettyFormatter<T> {
         match *result {
             TestResult::TrOk => self.write_ok()?,
             TestResult::TrFailed | TestResult::TrFailedMsg(_) => self.write_failed()?,
+            TestResult::TrSkipped(ref reason) => {
+                self.write_skipped()?;
+                self.write_plain(&format!(": {}", reason))?;
+            },
             TestResult::TrIgnored => self.write_ignored()?,
             TestResult::TrAllowedFail => self.write_allowed_fail()?,
             TestResult::TrBench(ref bs) => {

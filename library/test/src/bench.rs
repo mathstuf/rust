@@ -188,11 +188,17 @@ where
     }
 }
 
+enum BenchRun {
+    Skipped(String),
+    Completed(Option<stats::Summary>),
+}
+
 pub fn benchmark<F>(
     id: TestId,
     desc: TestDesc,
     monitor_ch: Sender<CompletedTest>,
     nocapture: bool,
+    skipfn: Option<Box<dyn FnOnce() -> Option<String> + Send>>,
     f: F,
 ) where
     F: FnMut(&mut Bencher),
@@ -205,20 +211,33 @@ pub fn benchmark<F>(
         io::set_output_capture(Some(data.clone()));
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| bs.bench(f)));
+    let result = if let Some(skipfn) = skipfn {
+        match catch_unwind(AssertUnwindSafe(skipfn)) {
+            Ok(Some(reason)) => Ok(BenchRun::Skipped(reason)),
+            Ok(None) => {
+                catch_unwind(AssertUnwindSafe(|| bs.bench(f)))
+                    .map(BenchRun::Completed)
+            },
+            Err(e) => Err(e),
+        }
+    } else {
+        catch_unwind(AssertUnwindSafe(|| bs.bench(f)))
+            .map(BenchRun::Completed)
+    };
 
     io::set_output_capture(None);
 
     let test_result = match result {
+        Ok(BenchRun::Skipped(reason)) => TestResult::TrSkipped(reason),
         //bs.bench(f) {
-        Ok(Some(ns_iter_summ)) => {
+        Ok(BenchRun::Completed(Some(ns_iter_summ))) => {
             let ns_iter = cmp::max(ns_iter_summ.median as u64, 1);
             let mb_s = bs.bytes * 1000 / ns_iter;
 
             let bs = BenchSamples { ns_iter_summ, mb_s: mb_s as usize };
             TestResult::TrBench(bs)
         }
-        Ok(None) => {
+        Ok(BenchRun::Completed(None)) => {
             // iter not called, so no data.
             // FIXME: error in this case?
             let samples: &mut [f64] = &mut [0.0_f64; 1];

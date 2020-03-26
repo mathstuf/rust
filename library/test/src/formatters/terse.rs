@@ -49,6 +49,10 @@ impl<T: Write> TerseFormatter<T> {
         self.write_short_result("F", term::color::RED)
     }
 
+    pub fn write_skipped(&mut self) -> io::Result<()> {
+        self.write_short_result("s", term::color::YELLOW)
+    }
+
     pub fn write_ignored(&mut self) -> io::Result<()> {
         self.write_short_result("i", term::color::YELLOW)
     }
@@ -196,6 +200,7 @@ impl<T: Write> OutputFormatter for TerseFormatter<T> {
             TestResult::TrFailed | TestResult::TrFailedMsg(_) | TestResult::TrTimedFail => {
                 self.write_failed()
             }
+            TestResult::TrSkipped(_) => self.write_skipped(),
             TestResult::TrIgnored => self.write_ignored(),
             TestResult::TrAllowedFail => self.write_allowed_fail(),
             TestResult::TrBench(ref bs) => {

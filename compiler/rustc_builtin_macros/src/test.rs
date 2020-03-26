@@ -68,6 +68,11 @@ pub fn expand_bench(
     expand_test_or_bench(cx, attr_sp, item, true)
 }
 
+enum SkipFn {
+    Predicate(Symbol),
+    None,
+}
+
 pub fn expand_test_or_bench(
     cx: &mut ExtCtxt<'_>,
     attr_sp: Span,
@@ -199,6 +204,78 @@ pub fn expand_test_or_bench(
         )
     };
 
+    let skip_fn = if let Some(attr) = cx.sess.find_by_name(&item.attrs, sym::skip_if) {
+        if let Some(list) = attr.meta_item_list() {
+            let skip_if_expr = list
+                .iter()
+                .find(|mi| mi.has_name(sym::predicate))
+                .and_then(|mi| mi.meta_item())
+                .and_then(|mi| mi.value_str());
+            match (list.len(), skip_if_expr) {
+                (1, Some(skip_if_expr)) => SkipFn::Predicate(skip_if_expr),
+                (_, _) => {
+                    cx.sess.parse_sess.span_diagnostic
+                        .struct_span_err(
+                            attr.span,
+                            // TODO: Make an error message.
+                            "",
+                        )
+                        .emit();
+                    SkipFn::None
+                },
+            }
+        } else {
+            cx.sess.parse_sess.span_diagnostic.span_err(
+                sp,
+                "`#[skip_if]` requires a value.",
+            );
+
+            SkipFn::None
+        }
+    } else {
+        SkipFn::None
+    };
+
+    let skip_fn = if let SkipFn::Predicate(predicate) = skip_fn {
+        // TODO: parse `predicate` into an expression.
+
+        // ::std::option::Option::Some(
+        cx.expr_call(
+            sp,
+            cx.expr_path(
+                cx.path(
+                    sp,
+                    vec![
+                        Ident::from_str_and_span("std", sp),
+                        Ident::from_str_and_span("option", sp),
+                        Ident::from_str_and_span("Option", sp),
+                        Ident::from_str_and_span("Some", sp),
+                    ],
+                ),
+            ),
+            vec![
+                // ::test::SkipFn::StaticSkipFn(
+                cx.expr_call(
+                    sp,
+                    cx.expr_path(test_path("StaticSkipFn")),
+                    vec![cx.expr_path(cx.path(sp, vec![Ident::from_str_and_span(&predicate.as_str(), sp)]))],
+                ), // )
+            ],
+        ) // )
+    } else {
+        cx.expr_path(
+            cx.path(
+                sp,
+                vec![
+                    Ident::from_str_and_span("std", sp),
+                    Ident::from_str_and_span("option", sp),
+                    Ident::from_str_and_span("Option", sp),
+                    Ident::from_str_and_span("None", sp),
+                ],
+            ),
+        )
+    };
+
     let mut test_const = cx.item(
         sp,
         Ident::new(item.ident.name, sp),
@@ -297,7 +374,10 @@ pub fn expand_test_or_bench(
                             ),
                         ),
                         // testfn: test::StaticTestFn(...) | test::StaticBenchFn(...)
-                        field("testfn", test_fn), // }
+                        field("testfn", test_fn),
+                        // skipfn: test::StaticSkipFn(...)
+                        field("skipfn", skip_fn),
+                        // }
                     ],
                 ), // }
             ),

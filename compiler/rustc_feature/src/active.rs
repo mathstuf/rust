@@ -656,6 +656,9 @@ declare_features! (
     /// Allows using imported `main` function
     (active, imported_main, "1.53.0", Some(28937), None),
 
+    /// Allows using the `skip_if` attribute on tests.
+    (active, test_skip, "1.51.0", None, None),
+
     // -------------------------------------------------------------------------
     // feature-group-end: actual feature gates
     // -------------------------------------------------------------------------
@@ -683,6 +686,7 @@ pub const INCOMPLETE_FEATURES: &[Symbol] = &[
     sym::const_generics_defaults,
     sym::inherent_associated_types,
     sym::type_alias_impl_trait,
+    sym::test_skip,
 ];
 
 /// Some features are not allowed to be used together at the same time, if

@@ -160,12 +160,17 @@ pub fn test_main_static_abort(tests: &[&TestDescAndFn]) {
             .map(make_owned_test)
             .next()
             .unwrap_or_else(|| panic!("couldn't find a test with the provided name '{}'", name));
-        let TestDescAndFn { desc, testfn } = test;
+        let TestDescAndFn { desc, testfn, skipfn } = test;
+        let skipfn = skipfn
+            .map(|skipfn| match skipfn {
+                StaticSkipFn(f) => Box::new(f) as Box<DynSkipFn>,
+                _ => panic!("only static skip_if predicates are supported"),
+            });
         let testfn = match testfn {
             StaticTestFn(f) => f,
             _ => panic!("only static tests are supported"),
         };
-        run_test_in_spawned_subprocess(desc, Box::new(testfn));
+        run_test_in_spawned_subprocess(desc, skipfn, Box::new(testfn));
     }
 
     let args = env::args().collect::<Vec<_>>();
@@ -179,8 +184,8 @@ pub fn test_main_static_abort(tests: &[&TestDescAndFn]) {
 /// This will panic when fed any dynamic tests, because they cannot be cloned.
 fn make_owned_test(test: &&TestDescAndFn) -> TestDescAndFn {
     match test.testfn {
-        StaticTestFn(f) => TestDescAndFn { testfn: StaticTestFn(f), desc: test.desc.clone() },
-        StaticBenchFn(f) => TestDescAndFn { testfn: StaticBenchFn(f), desc: test.desc.clone() },
+        StaticTestFn(f) => TestDescAndFn { testfn: StaticTestFn(f), skipfn: None, desc: test.desc.clone() },
+        StaticBenchFn(f) => TestDescAndFn { testfn: StaticBenchFn(f), skipfn: None, desc: test.desc.clone() },
         _ => panic!("non-static tests passed to test::test_main_static"),
     }
 }
@@ -444,7 +449,7 @@ pub fn convert_benchmarks_to_tests(tests: Vec<TestDescAndFn>) -> Vec<TestDescAnd
                 })),
                 f => f,
             };
-            TestDescAndFn { desc: x.desc, testfn }
+            TestDescAndFn { desc: x.desc, testfn, skipfn: None }
         })
         .collect()
 }
@@ -458,7 +463,7 @@ pub fn run_test(
     monitor_ch: Sender<CompletedTest>,
     concurrency: Concurrent,
 ) -> Option<thread::JoinHandle<()>> {
-    let TestDescAndFn { desc, testfn } = test;
+    let TestDescAndFn { desc, testfn, skipfn } = test;
 
     // Emscripten can catch panics but other wasm targets cannot
     let ignore_because_no_process_support = desc.should_panic != ShouldPanic::No
@@ -482,6 +487,7 @@ pub fn run_test(
         id: TestId,
         desc: TestDesc,
         monitor_ch: Sender<CompletedTest>,
+        skipfn: Option<Box<dyn FnOnce() -> Option<String> + Send>>,
         testfn: Box<dyn FnOnce() + Send>,
         opts: TestRunOpts,
     ) -> Option<thread::JoinHandle<()>> {
@@ -494,6 +500,7 @@ pub fn run_test(
                 desc,
                 opts.nocapture,
                 opts.time.is_some(),
+                skipfn,
                 testfn,
                 monitor_ch,
                 opts.time,
@@ -535,17 +542,27 @@ pub fn run_test(
     let test_run_opts =
         TestRunOpts { strategy, nocapture: opts.nocapture, concurrency, time: opts.time_options };
 
+    let skipfn = skipfn
+        .map(|skipfn| match skipfn {
+            StaticSkipFn(f) => {
+                Box::new(move || __rust_begin_short_backtrace_skip(f)) as Box<DynSkipFn>
+            },
+            DynSkipFn(f) => {
+                Box::new(move || __rust_begin_short_backtrace_skip(f))
+            },
+        });
+
     match testfn {
         DynBenchFn(bencher) => {
             // Benchmarks aren't expected to panic, so we run them all in-process.
-            crate::bench::benchmark(id, desc, monitor_ch, opts.nocapture, |harness| {
+            crate::bench::benchmark(id, desc, monitor_ch, opts.nocapture, skipfn, |harness| {
                 bencher.run(harness)
             });
             None
         }
         StaticBenchFn(benchfn) => {
             // Benchmarks aren't expected to panic, so we run them all in-process.
-            crate::bench::benchmark(id, desc, monitor_ch, opts.nocapture, benchfn);
+            crate::bench::benchmark(id, desc, monitor_ch, opts.nocapture, skipfn, benchfn);
             None
         }
         DynTestFn(f) => {
@@ -557,6 +574,7 @@ pub fn run_test(
                 id,
                 desc,
                 monitor_ch,
+                skipfn,
                 Box::new(move || __rust_begin_short_backtrace(f)),
                 test_run_opts,
             )
@@ -565,10 +583,22 @@ pub fn run_test(
             id,
             desc,
             monitor_ch,
+            skipfn,
             Box::new(move || __rust_begin_short_backtrace(f)),
             test_run_opts,
         ),
     }
+}
+
+/// Fixed frame used to clean the backtrace with `RUST_BACKTRACE=1`.
+#[inline(never)]
+fn __rust_begin_short_backtrace_skip<F: FnOnce() -> Option<String>>(f: F) -> Option<String> {
+    let ret = f();
+
+    // prevent this frame from being tail-call optimised away
+    black_box(());
+
+    ret
 }
 
 /// Fixed frame used to clean the backtrace with `RUST_BACKTRACE=1`.
@@ -585,6 +615,7 @@ fn run_test_in_process(
     desc: TestDesc,
     nocapture: bool,
     report_time: bool,
+    skipfn: Option<Box<dyn FnOnce() -> Option<String> + Send>>,
     testfn: Box<dyn FnOnce() + Send>,
     monitor_ch: Sender<CompletedTest>,
     time_opts: Option<time::TestTimeOptions>,
@@ -597,7 +628,19 @@ fn run_test_in_process(
     }
 
     let start = report_time.then(Instant::now);
-    let result = catch_unwind(AssertUnwindSafe(testfn));
+    let result = if let Some(skipfn) = skipfn {
+        match catch_unwind(AssertUnwindSafe(skipfn)) {
+            Ok(Some(reason)) => Ok(TestRun::Skipped(reason)),
+            Ok(None) => {
+                catch_unwind(AssertUnwindSafe(testfn))
+                    .map(|()| TestRun::Completed)
+            },
+            Err(e) => Err(e),
+        }
+    } else {
+        catch_unwind(AssertUnwindSafe(testfn))
+            .map(|()| TestRun::Completed)
+    };
     let exec_time = start.map(|start| {
         let duration = start.elapsed();
         TestExecTime(duration)
@@ -606,7 +649,7 @@ fn run_test_in_process(
     io::set_output_capture(None);
 
     let test_result = match result {
-        Ok(()) => calc_result(&desc, Ok(()), &time_opts, &exec_time),
+        Ok(tr) => calc_result(&desc, Ok(tr), &time_opts, &exec_time),
         Err(e) => calc_result(&desc, Err(e.as_ref()), &time_opts, &exec_time),
     };
     let stdout = data.lock().unwrap_or_else(|e| e.into_inner()).to_vec();
@@ -669,12 +712,17 @@ fn spawn_test_subprocess(
     monitor_ch.send(message).unwrap();
 }
 
-fn run_test_in_spawned_subprocess(desc: TestDesc, testfn: Box<dyn FnOnce() + Send>) -> ! {
+enum PanicState<'a> {
+    TestRun(TestRun),
+    InPanic(&'a PanicInfo<'a>),
+}
+
+fn run_test_in_spawned_subprocess(desc: TestDesc, skipfn: Option<Box<dyn FnOnce() -> Option<String> + Send>>, testfn: Box<dyn FnOnce() + Send>) -> ! {
     let builtin_panic_hook = panic::take_hook();
-    let record_result = Arc::new(move |panic_info: Option<&'_ PanicInfo<'_>>| {
-        let test_result = match panic_info {
-            Some(info) => calc_result(&desc, Err(info.payload()), &None, &None),
-            None => calc_result(&desc, Ok(()), &None, &None),
+    let record_result = Arc::new(move |panic_state: PanicState<'_>| {
+        let test_result = match panic_state {
+            PanicState::InPanic(info) => calc_result(&desc, Err(info.payload()), &None, &None),
+            PanicState::TestRun(ref tr) => calc_result(&desc, Ok(tr.clone()), &None, &None),
         };
 
         // We don't support serializing TrFailedMsg, so just
@@ -683,19 +731,27 @@ fn run_test_in_spawned_subprocess(desc: TestDesc, testfn: Box<dyn FnOnce() + Sen
             eprintln!("{}", msg);
         }
 
-        if let Some(info) = panic_info {
+        if let PanicState::InPanic(info) = panic_state {
             builtin_panic_hook(info);
         }
 
         if let TrOk = test_result {
             process::exit(test_result::TR_OK);
+        } else if let TrSkipped(reason) = test_result {
+            eprintln!("{}", reason);
+            process::exit(test_result::TR_SKIPPED);
         } else {
             process::exit(test_result::TR_FAILED);
         }
     });
     let record_result2 = record_result.clone();
-    panic::set_hook(Box::new(move |info| record_result2(Some(&info))));
+    panic::set_hook(Box::new(move |info| record_result2(PanicState::InPanic(&info))));
+    if let Some(skipfn) = skipfn {
+        if let Some(reason) = skipfn() {
+            record_result(PanicState::TestRun(TestRun::Skipped(reason)));
+        }
+    }
     testfn();
-    record_result(None);
+    record_result(PanicState::TestRun(TestRun::Completed));
     unreachable!("panic=abort callback should have exited the process")
 }

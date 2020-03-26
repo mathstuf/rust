@@ -46,6 +46,7 @@ pub struct ConsoleTestState {
     pub total: usize,
     pub passed: usize,
     pub failed: usize,
+    pub skipped: usize,
     pub ignored: usize,
     pub allowed_fail: usize,
     pub filtered_out: usize,
@@ -70,6 +71,7 @@ impl ConsoleTestState {
             total: 0,
             passed: 0,
             failed: 0,
+            skipped: 0,
             ignored: 0,
             allowed_fail: 0,
             filtered_out: 0,
@@ -111,6 +113,7 @@ impl ConsoleTestState {
                     TestResult::TrOk => "ok".to_owned(),
                     TestResult::TrFailed => "failed".to_owned(),
                     TestResult::TrFailedMsg(ref msg) => format!("failed: {}", msg),
+                    TestResult::TrSkipped(ref reason) => format!("skipped: {}", reason),
                     TestResult::TrIgnored => "ignored".to_owned(),
                     TestResult::TrAllowedFail => "failed (allowed)".to_owned(),
                     TestResult::TrBench(ref bs) => fmt_bench_samples(bs),
@@ -146,7 +149,7 @@ pub fn list_tests_console(opts: &TestOpts, tests: Vec<TestDescAndFn>) -> io::Res
     for test in filter_tests(&opts, tests) {
         use crate::TestFn::*;
 
-        let TestDescAndFn { desc: TestDesc { name, .. }, testfn } = test;
+        let TestDescAndFn { desc: TestDesc { name, .. }, testfn, .. } = test;
 
         let fntype = match testfn {
             StaticTestFn(..) | DynTestFn(..) => {
@@ -190,6 +193,11 @@ fn handle_test_result(st: &mut ConsoleTestState, completed_test: CompletedTest) 
             st.passed += 1;
             st.not_failures.push((test, stdout));
         }
+        TestResult::TrSkipped(reason) => {
+            st.skipped += 1;
+            let mut stdout = stdout;
+            stdout.extend_from_slice(format!("note: {}", reason).as_bytes());
+        },
         TestResult::TrIgnored => st.ignored += 1,
         TestResult::TrAllowedFail => st.allowed_fail += 1,
         TestResult::TrBench(bs) => {

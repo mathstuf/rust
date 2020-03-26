@@ -64,6 +64,7 @@ fn one_ignored_one_unignored_test() -> Vec<TestDescAndFn> {
                 test_type: TestType::Unknown,
             },
             testfn: DynTestFn(Box::new(move || {})),
+            skipfn: None,
         },
         TestDescAndFn {
             desc: TestDesc {
@@ -74,6 +75,7 @@ fn one_ignored_one_unignored_test() -> Vec<TestDescAndFn> {
                 test_type: TestType::Unknown,
             },
             testfn: DynTestFn(Box::new(move || {})),
+            skipfn: None,
         },
     ]
 }
@@ -92,6 +94,7 @@ pub fn do_not_run_ignored_tests() {
             test_type: TestType::Unknown,
         },
         testfn: DynTestFn(Box::new(f)),
+        skipfn: None,
     };
     let (tx, rx) = channel();
     run_test(&TestOpts::new(), false, TestId(0), desc, RunStrategy::InProcess, tx, Concurrent::No);
@@ -111,6 +114,7 @@ pub fn ignored_tests_result_in_ignored() {
             test_type: TestType::Unknown,
         },
         testfn: DynTestFn(Box::new(f)),
+        skipfn: None,
     };
     let (tx, rx) = channel();
     run_test(&TestOpts::new(), false, TestId(0), desc, RunStrategy::InProcess, tx, Concurrent::No);
@@ -134,6 +138,7 @@ fn test_should_panic() {
             test_type: TestType::Unknown,
         },
         testfn: DynTestFn(Box::new(f)),
+        skipfn: None,
     };
     let (tx, rx) = channel();
     run_test(&TestOpts::new(), false, TestId(0), desc, RunStrategy::InProcess, tx, Concurrent::No);
@@ -157,6 +162,7 @@ fn test_should_panic_good_message() {
             test_type: TestType::Unknown,
         },
         testfn: DynTestFn(Box::new(f)),
+        skipfn: None,
     };
     let (tx, rx) = channel();
     run_test(&TestOpts::new(), false, TestId(0), desc, RunStrategy::InProcess, tx, Concurrent::No);
@@ -185,6 +191,7 @@ fn test_should_panic_bad_message() {
             test_type: TestType::Unknown,
         },
         testfn: DynTestFn(Box::new(f)),
+        skipfn: None,
     };
     let (tx, rx) = channel();
     run_test(&TestOpts::new(), false, TestId(0), desc, RunStrategy::InProcess, tx, Concurrent::No);
@@ -217,6 +224,7 @@ fn test_should_panic_non_string_message_type() {
             test_type: TestType::Unknown,
         },
         testfn: DynTestFn(Box::new(f)),
+        skipfn: None,
     };
     let (tx, rx) = channel();
     run_test(&TestOpts::new(), false, TestId(0), desc, RunStrategy::InProcess, tx, Concurrent::No);
@@ -241,6 +249,7 @@ fn test_should_panic_but_succeeds() {
                 test_type: TestType::Unknown,
             },
             testfn: DynTestFn(Box::new(f)),
+            skipfn: None,
         };
         let (tx, rx) = channel();
         run_test(
@@ -273,6 +282,7 @@ fn report_time_test_template(report_time: bool) -> Option<TestExecTime> {
             test_type: TestType::Unknown,
         },
         testfn: DynTestFn(Box::new(f)),
+        skipfn: None,
     };
     let time_options = if report_time { Some(TestTimeOptions::default()) } else { None };
 
@@ -306,6 +316,7 @@ fn time_test_failure_template(test_type: TestType) -> TestResult {
             test_type,
         },
         testfn: DynTestFn(Box::new(f)),
+        skipfn: None,
     };
     // `Default` will initialize all the thresholds to 0 milliseconds.
     let mut time_options = TestTimeOptions::default();
@@ -454,6 +465,7 @@ pub fn exclude_should_panic_option() {
             test_type: TestType::Unknown,
         },
         testfn: DynTestFn(Box::new(move || {})),
+        skipfn: None,
     });
 
     let filtered = filter_tests(&opts, tests);
@@ -476,6 +488,7 @@ pub fn exact_filter_match() {
                     test_type: TestType::Unknown,
                 },
                 testfn: DynTestFn(Box::new(move || {})),
+                skipfn: None,
             })
             .collect()
     }
@@ -568,6 +581,7 @@ pub fn sort_tests() {
                     test_type: TestType::Unknown,
                 },
                 testfn: DynTestFn(Box::new(testfn)),
+                skipfn: None,
             };
             tests.push(test);
         }
@@ -645,8 +659,12 @@ pub fn test_bench_no_iter() {
         test_type: TestType::Unknown,
     };
 
-    crate::bench::benchmark(TestId(0), desc, tx, true, f);
-    rx.recv().unwrap();
+    crate::bench::benchmark(TestId(0), desc, tx, true, None, f);
+    let test_event = rx.recv().unwrap();
+    if let TrBench(_) = test_event.result {
+    } else {
+        panic!("unexpected test result: {:?}", test_event.result)
+    }
 }
 
 #[test]
@@ -665,8 +683,12 @@ pub fn test_bench_iter() {
         test_type: TestType::Unknown,
     };
 
-    crate::bench::benchmark(TestId(0), desc, tx, true, f);
-    rx.recv().unwrap();
+    crate::bench::benchmark(TestId(0), desc, tx, true, None, f);
+    let test_event = rx.recv().unwrap();
+    if let TrBench(_) = test_event.result {
+    } else {
+        panic!("unexpected test result: {:?}", test_event.result)
+    }
 }
 
 #[test]
@@ -694,6 +716,7 @@ fn should_sort_failures_before_printing_them() {
         total: 0,
         passed: 0,
         failed: 0,
+        skipped: 0,
         ignored: 0,
         allowed_fail: 0,
         filtered_out: 0,
@@ -715,4 +738,168 @@ fn should_sort_failures_before_printing_them() {
     let apos = s.find("a").unwrap();
     let bpos = s.find("b").unwrap();
     assert!(apos < bpos);
+}
+
+#[test]
+fn run_skip_says_nothing() {
+    fn skip() -> Option<String> {
+        None
+    }
+    fn f() {
+        panic!();
+    }
+    let desc = TestDescAndFn {
+        desc: TestDesc {
+            name: StaticTestName("whatever"),
+            ignore: false,
+            should_panic: ShouldPanic::No,
+            allow_fail: false,
+            test_type: TestType::Unknown,
+        },
+        testfn: DynTestFn(Box::new(f)),
+        skipfn: Some(StaticSkipFn(skip)),
+    };
+    let (tx, rx) = channel();
+    run_test(&TestOpts::new(), false, TestId(0), desc, RunStrategy::InProcess, tx, Concurrent::No);
+    let result = rx.recv().unwrap().result;
+    assert_eq!(result, TrFailed);
+}
+
+#[test]
+fn do_not_run_skipped_tests() {
+    fn skip() -> Option<String> {
+        Some("reason".into())
+    }
+    fn f() {
+        panic!();
+    }
+    let desc = TestDescAndFn {
+        desc: TestDesc {
+            name: StaticTestName("whatever"),
+            ignore: false,
+            should_panic: ShouldPanic::No,
+            allow_fail: false,
+            test_type: TestType::Unknown,
+        },
+        testfn: DynTestFn(Box::new(f)),
+        skipfn: Some(StaticSkipFn(skip)),
+    };
+    let (tx, rx) = channel();
+    run_test(&TestOpts::new(), false, TestId(0), desc, RunStrategy::InProcess, tx, Concurrent::No);
+    let result = rx.recv().unwrap().result;
+    assert_eq!(result, TrSkipped("reason".into()));
+}
+
+#[test]
+fn panicking_skip_fn() {
+    fn skip() -> Option<String> {
+        panic!();
+    }
+    fn f() {
+        panic!();
+    }
+    let desc = TestDescAndFn {
+        desc: TestDesc {
+            name: StaticTestName("whatever"),
+            ignore: false,
+            should_panic: ShouldPanic::No,
+            allow_fail: false,
+            test_type: TestType::Unknown,
+        },
+        testfn: DynTestFn(Box::new(f)),
+        skipfn: Some(StaticSkipFn(skip)),
+    };
+    let (tx, rx) = channel();
+    run_test(&TestOpts::new(), false, TestId(0), desc, RunStrategy::InProcess, tx, Concurrent::No);
+    let result = rx.recv().unwrap().result;
+    assert_eq!(result, TrFailed);
+}
+
+#[test]
+fn bench_skip_says_nothing() {
+    fn f(_: &mut Bencher) {}
+
+    let (tx, rx) = channel();
+
+    let desc = TestDesc {
+        name: StaticTestName("f"),
+        ignore: false,
+        should_panic: ShouldPanic::No,
+        allow_fail: false,
+        test_type: TestType::Unknown,
+    };
+
+    fn skip() -> Option<String> {
+        None
+    }
+
+    crate::bench::benchmark(TestId(0), desc, tx, true, Some(Box::new(skip)), f);
+    let test_event = rx.recv().unwrap();
+    if let TrBench(_) = test_event.result {
+    } else {
+        panic!("unexpected test result: {:?}", test_event.result)
+    }
+}
+
+#[test]
+fn bench_skipped() {
+    fn f(_: &mut Bencher) {}
+
+    let (tx, rx) = channel();
+
+    let desc = TestDesc {
+        name: StaticTestName("f"),
+        ignore: false,
+        should_panic: ShouldPanic::No,
+        allow_fail: false,
+        test_type: TestType::Unknown,
+    };
+
+    fn skip() -> Option<String> {
+        Some("reason".into())
+    }
+
+    crate::bench::benchmark(TestId(0), desc, tx, true, Some(Box::new(skip)), f);
+    let test_event = rx.recv().unwrap();
+    if let TrSkipped(reason) = test_event.result {
+        assert_eq!(reason, "reason");
+    } else {
+        panic!("unexpected test result: {:?}", test_event.result)
+    }
+}
+
+#[test]
+fn bench_skip_panic() {
+    fn f(_: &mut Bencher) {}
+
+    let (tx, rx) = channel();
+
+    let desc = TestDesc {
+        name: StaticTestName("f"),
+        ignore: false,
+        should_panic: ShouldPanic::No,
+        allow_fail: false,
+        test_type: TestType::Unknown,
+    };
+
+    fn skip() -> Option<String> {
+        panic!()
+    }
+
+    crate::bench::benchmark(TestId(0), desc, tx, true, Some(Box::new(skip)), f);
+    let test_event = rx.recv().unwrap();
+    if let TrFailed = test_event.result {
+    } else {
+        panic!("unexpected test result: {:?}", test_event.result)
+    }
+}
+
+fn always_skip() -> Option<String> {
+    Some("always happens".into())
+}
+
+#[test]
+#[skip_if(predicate = "always_skip")]
+fn skipped_test() {
+    panic!()
 }

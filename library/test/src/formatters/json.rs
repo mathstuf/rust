@@ -115,6 +115,16 @@ impl<T: Write> OutputFormatter for JsonFormatter<T> {
                 Some(&*format!(r#""message": "{}""#, EscapedString(m))),
             ),
 
+            TestResult::TrSkipped(ref reason) => {
+                self.write_event(
+                    "test",
+                    desc.name.as_slice(),
+                    "skipped",
+                    exec_time,
+                    stdout,
+                    Some(&*format!(r#""reason": "{}""#, EscapedString(reason))),
+                )
+            }
             TestResult::TrIgnored => {
                 self.write_event("test", desc.name.as_slice(), "ignored", exec_time, stdout, None)
             }

@@ -324,6 +324,11 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // Testing:
     gated!(allow_fail, Normal, template!(Word), experimental!(allow_fail)),
     gated!(
+        test_skip, Normal,
+        template!(Word, List: r#"predicate = "skip_predicate"#, NameValueStr: "skip_predicate"),
+        experimental!(skip_if),
+    ),
+    gated!(
         test_runner, CrateLevel, template!(List: "path"), custom_test_frameworks,
         "custom test frameworks are an unstable feature",
     ),

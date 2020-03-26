@@ -7,6 +7,7 @@ use super::bench::Bencher;
 use super::options;
 
 pub use NamePadding::*;
+pub use SkipFn::*;
 pub use TestFn::*;
 pub use TestName::*;
 
@@ -79,6 +80,35 @@ pub trait TDynBenchFn: Send {
     fn run(&self, harness: &mut Bencher);
 }
 
+pub type DynSkipFn = dyn FnOnce() -> Option<String> + Send;
+
+// A function that determines whether a test can run or not at runtime.
+// If the function returns a string, it is used as the reason for the
+// associated test not being able to run, If the function panics, the
+// test fails.
+pub enum SkipFn {
+    StaticSkipFn(fn() -> Option<String>),
+    DynSkipFn(Box<DynSkipFn>),
+}
+
+impl SkipFn {
+    pub fn padding(&self) -> NamePadding {
+        match *self {
+            StaticSkipFn(..) => PadNone,
+            DynSkipFn(..) => PadNone,
+        }
+    }
+}
+
+impl fmt::Debug for SkipFn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match *self {
+            StaticSkipFn(..) => "StaticSkipFn(..)",
+            DynSkipFn(..) => "DynSkipFn(..)",
+        })
+    }
+}
+
 // A function that runs a test. If the function returns successfully,
 // the test succeeds; if the function panics then the test fails. We
 // may need to come up with a more clever definition of test in order
@@ -145,5 +175,6 @@ impl TestDesc {
 #[derive(Debug)]
 pub struct TestDescAndFn {
     pub desc: TestDesc,
+    pub skipfn: Option<SkipFn>,
     pub testfn: TestFn,
 }
